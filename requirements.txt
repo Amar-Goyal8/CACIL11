@@ -1,0 +1,4 @@
+# the packages needed to run the scraper
+trafilatura
+google-genai
+python-dotenv
