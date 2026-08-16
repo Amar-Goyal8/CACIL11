@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "ClearLens highlight spike",
+  "version": "0.0.1",
+  "description": "Throwaway harness. Checks whether exact passages stay marked on live news pages.",
+
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.nytimes.com/*",
+        "https://www.bbc.com/*",
+        "https://www.bbc.co.uk/*",
+        "https://www.cnn.com/*",
+        "https://apnews.com/*",
+        "https://www.reuters.com/*",
+        "https://www.washingtonpost.com/*",
+        "https://www.npr.org/*",
+        "https://www.politico.com/*",
+        "https://www.foxnews.com/*",
+        "https://www.theguardian.com/*"
+      ],
+      "js": ["content.js"],
+      "css": ["highlight.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

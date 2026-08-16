@@ -1,0 +1,24 @@
+/* Resting state underlines only, so reading stays undisturbed. The fill
+   arrives on hover from a separate registry in content.js, painted over the
+   top. ::highlight() has no :hover and ignores transitions, so the fade runs
+   on a frame loop there. */
+
+::highlight(cl-corrob) {
+  text-decoration: underline 2px #3d8a5a;
+  text-underline-offset: 3px;
+}
+
+::highlight(cl-context) {
+  text-decoration: underline 2px #c9a227;
+  text-underline-offset: 3px;
+}
+
+::highlight(cl-contested) {
+  text-decoration: underline 2px #b8402f;
+  text-underline-offset: 3px;
+}
+
+::highlight(cl-alone) {
+  text-decoration: underline 2px #a8a8b2;
+  text-underline-offset: 3px;
+}
