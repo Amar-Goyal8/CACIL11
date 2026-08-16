@@ -17,6 +17,7 @@ PROMPT = """You are given the full text of a news article. Extract the key detai
 **Summary:** (2-3 sentence summary)
 **Key Facts:**
 - (bullet points of the most important facts)
+**Statistics/Data:** (any relevant numbers, statistics, or data points)
 **People/Organizations:** (who is involved)
 **Date/Location:** (when and where, if mentioned)
 

@@ -22,6 +22,9 @@ function collapse(s) {
 }
 
 function isArticlePage() {
+  if (document.querySelector('meta[property="og:type"][content="article"]')) return 'og';
+  if (document.querySelector('meta[property="article:published_time"]')) return 'published-time';
+
   for (const el of document.querySelectorAll('script[type="application/ld+json"]')) {
     try {
       const data = JSON.parse(el.textContent);
@@ -34,8 +37,61 @@ function isArticlePage() {
       // Plenty of sites ship malformed JSON-LD. Skip the block and keep looking.
     }
   }
-  if (document.querySelector('meta[property="og:type"][content="article"]')) return 'og';
   if (document.querySelector('article')) return 'article-tag';
+  return null;
+}
+
+// A section front is a pile of cards, and every card carries a summary
+// paragraph long enough to pass for body text. Two things give a listing
+// away: the paragraphs sit in separate <article> cards, and most of them
+// live inside a link, which body copy never does.
+//
+// Deliberately not counting <li> here. Plenty of real articles run a
+// bulleted list, and treating those items as cards would reject the page.
+function looksLikeListing(paras) {
+  const cards = new Set();
+  let linked = 0;
+
+  for (const p of paras) {
+    const card = p.closest('article, [role="article"]');
+    if (card) cards.add(card);
+    if (p.closest('a')) linked++;
+  }
+  return cards.size > 1 || linked > paras.length / 2;
+}
+
+// The wall is up when the text goes away or the page stops being readable.
+// Returns why, or null when the article is still there.
+function paywallEngaged(root, chars, baseline) {
+  // The plainest evidence, and the one NYT gives. No CSS trick, no scroll
+  // lock, no overlay. Ten seconds in, the words are simply deleted.
+  if (baseline && chars < baseline * 0.75) {
+    return `article text dropped from ${baseline} to ${chars} characters`;
+  }
+
+  if (getComputedStyle(document.body).overflow === 'hidden'
+    || getComputedStyle(document.documentElement).overflow === 'hidden') {
+    return 'page scroll is locked';
+  }
+
+  // Body collapsed behind a fade, the usual truncation trick.
+  for (let el = root; el && el !== document.body; el = el.parentElement) {
+    const s = getComputedStyle(el);
+    if (s.overflow === 'hidden' && s.maxHeight !== 'none'
+      && el.scrollHeight > el.clientHeight + 40) return 'article body is truncated';
+  }
+
+  // A wall pinned to the foot of the viewport is the usual shape, and it can
+  // sit anywhere in the tree, so probe the pixel rather than walk the DOM.
+  const under = document.elementFromPoint(innerWidth / 2, innerHeight - 40);
+  for (let el = under; el && el !== document.body; el = el.parentElement) {
+    const s = getComputedStyle(el);
+    if (s.position !== 'fixed' && s.position !== 'sticky') continue;
+    const box = el.getBoundingClientRect();
+    if (box.width > innerWidth * 0.6 && box.height > innerHeight * 0.25) {
+      return 'an overlay is covering the article';
+    }
+  }
   return null;
 }
 
@@ -52,6 +108,7 @@ function findArticleRoot() {
   });
 
   if (paras.length < 3) return null;
+  if (looksLikeListing(paras)) return null;
 
   let root = paras[0];
   for (const p of paras) {
@@ -101,15 +158,22 @@ function buildTextIndex(root) {
   return { root, text, spans };
 }
 
-function rangeFor(start, end, index) {
-  const a = index.spans.find(s => start >= s.start && start < s.end);
-  const b = index.spans.find(s => end > s.start && end <= s.end);
-  if (!a || !b) return null;
+// One range per text node the quote touches, rather than a single range
+// covering the lot. A range from the first node to the last also swallows
+// whatever sits between them, and my index deliberately skips ads, figures
+// and captions. Sites inject ads mid-paragraph, so the single-range version
+// picked up the ad's words and stopped matching the quote.
+function rangesFor(start, end, index) {
+  const out = [];
 
-  const range = document.createRange();
-  range.setStart(a.node, start - a.start);
-  range.setEnd(b.node, end - b.start);
-  return range;
+  for (const s of index.spans) {
+    if (s.end <= start || s.start >= end) continue;
+    const range = document.createRange();
+    range.setStart(s.node, Math.max(start, s.start) - s.start);
+    range.setEnd(s.node, Math.min(end, s.end) - s.start);
+    out.push(range);
+  }
+  return out.length ? out : null;
 }
 
 // Collapsed copy of the text plus a map from each collapsed character back to
@@ -208,6 +272,29 @@ const TINT = {
   alone: [236, 238, 242]
 };
 
+// A pale fill behind the light text of a dark page leaves the words
+// unreadable. Same hues taken dark instead, so light text still reads.
+const TINT_DARK = {
+  corrob: [28, 61, 43],
+  context: [61, 52, 22],
+  contested: [63, 26, 20],
+  alone: [42, 42, 48]
+};
+
+// Walk up for the first background anyone actually painted, since the article
+// container is usually transparent and inherits from body or html.
+function pageIsDark(from) {
+  for (let el = from; el; el = el.parentElement) {
+    const parts = getComputedStyle(el).backgroundColor.match(/[\d.]+/g);
+    if (!parts) continue;
+    const [r, g, b] = parts.map(Number);
+    const alpha = parts.length > 3 ? Number(parts[3]) : 1;
+    if (!alpha) continue;
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b < 128;
+  }
+  return false;
+}
+
 function setOrDrop(name, hl) {
   if (hl.size) CSS.highlights.set(name, hl);
   else CSS.highlights.delete(name);
@@ -222,7 +309,8 @@ function paint(results) {
   for (const c of CATS) {
     const h = new Highlight();
     for (const r of results) {
-      if (r.range && r.cat === c) h.add(r.range);
+      if (!r.ranges || r.cat !== c) continue;
+      for (const one of r.ranges) h.add(one);
     }
     setOrDrop('cl-' + c, h);
   }
@@ -248,8 +336,8 @@ const PAD = 2;
 // A line box is taller than the letters inside it, so testing the raw box
 // lights a passage up from the blank space above and below. Trim to roughly
 // the glyphs using the font size.
-function glyphHeight(range) {
-  const el = range.startContainer.parentElement;
+function glyphHeight(ranges) {
+  const el = ranges[0].startContainer.parentElement;
   const size = el ? parseFloat(getComputedStyle(el).fontSize) : 16;
   return (size || 16) * 1.15;
 }
@@ -258,8 +346,9 @@ function glyphHeight(range) {
 // <strong> hands back three boxes sitting on the same line. Group them back
 // into lines first. A range is contiguous, so one line means one span from
 // its leftmost edge to its rightmost.
-function linesOf(range, glyph) {
-  const boxes = [...range.getClientRects()]
+function linesOf(ranges, glyph) {
+  const boxes = ranges
+    .flatMap(r => [...r.getClientRects()])
     .filter(b => b.width > 0 && b.height > 0)
     .sort((a, b) => a.top - b.top || a.left - b.left);
 
@@ -298,8 +387,8 @@ function linesOf(range, glyph) {
 // halfway across the page, so measure against the range's own geometry.
 function hitTest(x, y, results) {
   for (const r of results) {
-    if (!r.range) continue;
-    for (const l of linesOf(r.range, r.glyph)) {
+    if (!r.ranges) continue;
+    for (const l of linesOf(r.ranges, r.glyph)) {
       if (y >= l.hitTop - PAD && y <= l.hitBottom + PAD
         && x >= l.left - PAD && x <= l.right + PAD) return r;
     }
@@ -352,8 +441,9 @@ function pickTargets(index) {
 function check(index, targets) {
   return targets.map((t, i) => {
     const at = findQuote(index, t);
-    const range = at ? rangeFor(at.start, at.end, index) : null;
-    const rects = range ? [...range.getClientRects()] : [];
+    const ranges = at ? rangesFor(at.start, at.end, index) : null;
+    const rects = ranges ? ranges.flatMap(x => [...x.getClientRects()]) : [];
+    const covered = ranges ? ranges.map(x => x.toString()).join('') : '';
 
     const r = {
       n: i + 1,
@@ -361,10 +451,10 @@ function check(index, targets) {
       quote: t.exact.slice(0, 55),
       crossings: t.crossings,
       resolved: !!at,
-      correct: range ? collapse(range.toString()) === collapse(t.exact) : false,
+      correct: ranges ? collapse(covered) === collapse(t.exact) : false,
       visible: rects.some(x => x.width > 0 && x.height > 0),
-      glyph: range ? glyphHeight(range) : 0,
-      range
+      glyph: ranges ? glyphHeight(ranges) : 0,
+      ranges
     };
 
     // Name the failure. A count alone tells you nothing when you are ten
@@ -430,17 +520,27 @@ function drawDots(host, results) {
 function run() {
   const kind = isArticlePage();
   if (!kind) {
-    console.log('[spike] no article on this page, stopping');
+    console.log('[spike] stopping: no article signal. og:type, article:published_time, JSON-LD and <article> all came back empty.');
     return;
   }
 
   const root = findArticleRoot();
   if (!root) {
-    console.log('[spike] found no article body, stopping');
+    // Name the stage, so a site that refuses to run says why on its own.
+    const all = [...document.querySelectorAll('p')];
+    const long = all.filter(p => p.textContent.trim().length >= 60);
+    const kept = long.filter(p => {
+      for (let n = p; n && n !== document.body; n = n.parentElement) if (SKIP.has(n.tagName)) return false;
+      return true;
+    });
+    console.log(`[spike] stopping: detected via ${kind}, but found no article body.`,
+      `${all.length} <p> total, ${long.length} over 60 chars, ${kept.length} outside nav/aside/header/footer.`,
+      kept.length >= 3 ? 'Rejected as a listing: cards or linked paragraphs.' : 'Needs 3 or more.');
     return;
   }
 
   let index = buildTextIndex(root);
+  const baseline = index.text.length;
   const targets = pickTargets(index);
   if (!targets.length) {
     console.log('[spike] found no usable sentences, stopping');
@@ -452,8 +552,9 @@ function run() {
   let lastUrl = location.href;
   let current = [];
   let hovered = null;
+  let dark = false;
 
-  const bare = rs => rs.map(({ range, ...r }) => r);
+  const bare = rs => rs.map(({ ranges, ...r }) => r);
 
   const fill = new Highlight();
   fill.priority = 1;
@@ -463,7 +564,8 @@ function run() {
 
   function fade(cat, up) {
     cancelAnimationFrame(frame);
-    const [r, g, b] = TINT[cat] || TINT.alone;
+    const set = dark ? TINT_DARK : TINT;
+    const [r, g, b] = set[cat] || set.alone;
 
     if (!rule) {
       // No stylesheet handle, so no fade. Snapping beats nothing.
@@ -484,9 +586,9 @@ function run() {
   }
 
   function setHover(hit) {
-    if (hit && hit.range) {
+    if (hit && hit.ranges) {
       fill.clear();
-      fill.add(hit.range);
+      for (const one of hit.ranges) fill.add(one);
       CSS.highlights.set('cl-hover', fill);
       fade(hit.cat, true);
     } else {
@@ -499,11 +601,28 @@ function run() {
 
   function score(reason) {
     index = buildTextIndex(root.isConnected ? root : findArticleRoot() || root);
+
+    // Re-checked every pass rather than once, since the wall arrives late and
+    // a subscriber never sees one at all.
+    const wall = paywallEngaged(root, index.text.length, baseline);
+    if (wall) {
+      CSS.highlights.clear();
+      current = [];
+      box.textContent = `paywalled, ${wall}`;
+      box.style.background = '#57534e';
+      dots.textContent = '';
+      box.onclick = null;
+      console.log(`[spike] stopping: ${wall}`);
+      return -1;
+    }
+
     const results = check(index, targets);
     const ok = results.filter(r => r.why === 'ok').length;
 
     current = results;
     hovered = null;
+    // Re-read each pass, since sites let you flip themes without a reload.
+    dark = pageIsDark(root);
     paint(results);
 
     const broken = [...new Set(results.filter(r => r.why !== 'ok').map(r => r.why))];
@@ -513,9 +632,11 @@ function run() {
     box.style.background = ok === results.length ? '#14532d' : '#7f1d1d';
     drawDots(dots, results);
 
-    // Only shout about a regression, and never on the first pass.
+    // Only report a regression, and never on the first pass. Kept at log
+    // level, since Chrome files console.warn from a content script under
+    // Errors on chrome://extensions and nothing here threw.
     if (worst !== Infinity && ok < worst) {
-      console.warn(`[spike] dropped to ${ok}/${results.length} after ${reason}`);
+      console.log(`[spike] dropped to ${ok}/${results.length} after ${reason}`);
       console.table(bare(results));
     }
     worst = Math.min(worst, ok);
@@ -563,9 +684,13 @@ function run() {
   window.__spike = {
     index: () => index,
     results: () => current,
-    targets, score, paint, hitTest, linesOf,
-    buildTextIndex, findQuote, rangeFor, findArticleRoot
+    targets, score, paint, hitTest, linesOf, pageIsDark, paywallEngaged,
+    buildTextIndex, findQuote, rangesFor, findArticleRoot
   };
 }
+
+// Set before run(), so the detection path stays inspectable on the pages
+// where run() correctly refuses to start.
+window.__spikeProbe = { isArticlePage, findArticleRoot, looksLikeListing };
 
 run();

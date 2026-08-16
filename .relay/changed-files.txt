@@ -1,0 +1,6 @@
+.gitignore
+requirements.txt
+scraper.py
+compare.py
+factcheck.py
+find_counterparts.py

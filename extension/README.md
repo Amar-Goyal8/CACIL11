@@ -66,6 +66,29 @@ stays outside.
 
 The real extension opens the passage card from the same handler.
 
+## What it refuses to run on
+
+Section fronts. Every card on a listing page sits in its own `<article>` tag with a
+summary paragraph long enough to pass for body text. Two signals give a listing away:
+the paragraphs live in separate `<article>` cards, and most of them sit inside a link,
+which body copy never does. Either one rejects the page.
+
+Paywalled articles. Checked on every pass rather than once, since the wall arrives
+late and a subscriber never sees one. Four signals:
+
+- the article text shrinks to under three quarters of what loaded
+- the page scroll gets locked
+- the article body gets collapsed behind a fade
+- a fixed panel covers more than a quarter of the viewport
+
+The badge says which. Highlights clear, and the scan resumes by itself if the wall
+goes away.
+
+The first signal exists because of NYT, and it is the one that matters. NYT ships the
+whole article, then deletes the text from the DOM about ten seconds later. No scroll
+lock, no CSS clamp, no overlay across the body. Watching the character count is the
+only thing that catches it.
+
 ## Reading the badge
 
 Three squares sit above the badge, one per passage, in its own colour. Filled means
@@ -123,7 +146,11 @@ real content script and are written for keeps:
   came from
 - findQuote, exact match, then a whitespace-tolerant fallback, with prefix and suffix
   picking the right occurrence when a short quote repeats
-- rangeFor, turns a pair of character offsets back into a live DOM Range
+- rangesFor, turns a pair of character offsets back into live DOM Ranges, one per text
+  node the quote touches. Not one range across the lot: a range from the first node to
+  the last also covers whatever sits between them, and the index deliberately skips
+  ads, figures and captions. Sites inject ads mid-paragraph, so a single range picked
+  up the ad's words and stopped matching the quote.
 
 ## One correction to the wiring plan
 
